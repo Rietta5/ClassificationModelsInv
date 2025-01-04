@@ -86,7 +86,7 @@ outputs = tf.keras.ops.mean((intermediate_img - intermediate_dist)**2, axis=-1)*
 
 VGGGAPLPIPS = tf.keras.Model([img, dist],outputs)
 
-VGGGAPLPIPS.compile(optimizer = "adam", metrics=["accuracy"], loss = PearsonCorrelation())
+VGGGAPLPIPS.compile(optimizer = "adam", loss = PearsonCorrelation())
 history = VGGGAPLPIPS.fit(dst_train_rdy, epochs = 1500, validation_data = dst_train_rdy,
                             callbacks = [tf.keras.callbacks.EarlyStopping(patience=25,monitor="val_accuracy"),
                                         tf.keras.callbacks.ModelCheckpoint(filepath=f'VGGGAP_IMA_LPIPS.keras', save_best_only=True,monitor="val_accuracy"),
