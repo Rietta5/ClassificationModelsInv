@@ -168,3 +168,42 @@ def crear_mosaico(data):
     mosaico = tf.pad(data, paddings, mode = "SYMMETRIC")
 
     return mosaico
+
+class Weight(tf.keras.layers.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def build(self,
+              input_shape, # (B,C)
+              ):
+        b, c = input_shape
+        self.w = self.add_weight(
+            shape=(c,),
+            initializer="ones",
+            trainable=True,
+        )
+
+    def call(self, inputs):
+        return inputs * self.w
+    
+class PearsonCorrelation(tf.keras.losses.Loss):
+    """
+    Loss used to train PerceptNet. Is calculated as the 
+    Pearson Correlation Coefficient for a sample.
+    """
+
+    def __init__(self, name="pearson", **kwargs):
+        super(PearsonCorrelation, self).__init__()
+        self.name = name
+
+    def call(self, y_true, y_pred):
+        y_true = tf.squeeze(y_true)
+        y_pred = tf.squeeze(y_pred)
+        y_true_mean = tf.reduce_mean(y_true)
+        y_pred_mean = tf.reduce_mean(y_pred)
+        num = y_true-y_true_mean
+        num *= y_pred-y_pred_mean
+        num = tf.reduce_sum(num)
+        denom = tf.sqrt(tf.reduce_sum((y_true-y_true_mean)**2))
+        denom *= tf.sqrt(tf.reduce_sum((y_pred-y_pred_mean)**2))
+        return num/denom
