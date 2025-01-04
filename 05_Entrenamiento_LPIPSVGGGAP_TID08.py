@@ -39,12 +39,13 @@ wandb.init(project="LPIPS_Mod",
 config = wandb.config
 
 ## Carga datos
-dst_train = TID2008("/media/disk/vista/BBDD_video_image/Image_Quality/TID/TID2008/")
+dst_train = TID2008("/media/disk/vista/BBDD_video_image/Image_Quality/TID/TID2008/").dataset
 dst_train_rdy = dst_train.shuffle(100, reshuffle_each_iteration=True)\
                          .batch(32, num_parallel_calls=tf.data.AUTOTUNE)\
+                         .map(lambda x,y,z: ((x, y), z))\
                          .prefetch(1)
-img, dist, mos = next(iter(dst_train_rdy))
-print(img.shape, dist.shape, mos.shape)
+# img, dist, mos = next(iter(dst_train_rdy))
+# print(img.shape, dist.shape, mos.shape)
 
 ## Semilla aleatoria
 
@@ -86,9 +87,9 @@ outputs = tf.keras.ops.mean((intermediate_img - intermediate_dist)**2, axis=-1)*
 VGGGAPLPIPS = tf.keras.Model([img, dist],outputs)
 
 VGGGAPLPIPS.compile(optimizer = "adam", metrics=["accuracy"], loss = PearsonCorrelation())
-history = VGGGAPLPIPS.fit(dst_train, epochs = 1500, validation_data = dst_train,
+history = VGGGAPLPIPS.fit(dst_train_rdy, epochs = 1500, validation_data = dst_train_rdy,
                             callbacks = [tf.keras.callbacks.EarlyStopping(patience=25,monitor="val_accuracy"),
-                                        tf.keras.callbacks.ModelCheckpoint(filepath=f'VGGGAP_IMA.keras', save_best_only=True,monitor="val_accuracy"),
+                                        tf.keras.callbacks.ModelCheckpoint(filepath=f'VGGGAP_IMA_LPIPS.keras', save_best_only=True,monitor="val_accuracy"),
                                         WandbMetricsLogger(),
-                                        WandbModelCheckpoint(filepath="VGGGAP_IMA.keras", save_best_only=True,monitor="val_accuracy")
+                                        WandbModelCheckpoint(filepath="VGGGAP_IMA_LPIPS.keras", save_best_only=True,monitor="val_accuracy")
                                         ])
