@@ -25,17 +25,17 @@ from sklearn.model_selection import train_test_split
 import wandb
 from wandb.integration.keras import WandbMetricsLogger, WandbModelCheckpoint
 
-config = {
-     "model": "VGGGAP_regu",
-     "batch_size": 256//8,
-     "learning_rate": 1e-3,
-     "epochs": 1500,
-}
-wandb.init(project="ClassificationModelsInv",
-           mode="online",
-           job_type="training",
-           config=config)
-config = wandb.config
+# config = {
+#      "model": "VGG16finalGAP",
+#      "batch_size": 256//8,
+#      "learning_rate": 1e-3,
+#      "epochs": 1500,
+# }
+# wandb.init(project="ClassificationModelsInv",
+#            mode="online",
+#            job_type="training",
+#            config=config)
+# config = wandb.config
 
 ## Semilla aleatoria
 
@@ -92,15 +92,14 @@ inputs = VGG16.input
 
 # salida_flatten = layers.Flatten()(VGG16.output)
 
-GAPMP1 = layers.GlobalAveragePooling2D()(VGG16.layers[3].output)
-GAPMP2 = layers.GlobalAveragePooling2D()(VGG16.layers[6].output)
-GAPMP3 = layers.GlobalAveragePooling2D()(VGG16.layers[10].output)
-GAPMP4 = layers.GlobalAveragePooling2D()(VGG16.layers[14].output)
+# GAPMP1 = layers.GlobalAveragePooling2D()(VGG16.layers[3].output)
+# GAPMP2 = layers.GlobalAveragePooling2D()(VGG16.layers[6].output)
+# GAPMP3 = layers.GlobalAveragePooling2D()(VGG16.layers[10].output)
+# GAPMP4 = layers.GlobalAveragePooling2D()(VGG16.layers[14].output)
 GAPMP5 = layers.GlobalAveragePooling2D()(VGG16.layers[18].output)
 
-GAPFinal = layers.Concatenate(axis=-1)([GAPMP1,GAPMP2,GAPMP3,GAPMP4,GAPMP5])
-outputs = layers.Dense(160, activation = "softmax",
-                       kernel_regularizer=tf.keras.regularizers.L2(l2=1e-4))(GAPFinal)
+GAPFinal = layers.Concatenate(axis=-1)([GAPMP5])
+outputs = layers.Dense(160, activation = "softmax")(GAPFinal)
 
 ModeloVGGGAP = tf.keras.Model(inputs,outputs)
 
@@ -110,7 +109,13 @@ prepro = tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess
 ModeloVGGGAP = tf.keras.Sequential([prepro, ModeloVGGGAP])
 
 ModeloVGGGAP.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-history = ModeloVGGGAP.fit(dst_train, epochs = 1500, validation_data = dst_val,
-                            callbacks = [tf.keras.callbacks.EarlyStopping(patience=25,monitor="val_accuracy"),
-                                        tf.keras.callbacks.ModelCheckpoint(filepath=f'VGGGAP_IMA_regu.keras', save_best_only=True,monitor="val_accuracy"),
-                                        WandbMetricsLogger()])
+
+tf.keras.utils.plot_model(ModeloVGGGAP,
+                          "ModeloVGGGAP.png")
+
+# history = ModeloVGGGAP.fit(dst_train, epochs = 1500, validation_data = dst_val,
+#                             callbacks = [tf.keras.callbacks.EarlyStopping(patience=25,monitor="val_accuracy"),
+#                                         tf.keras.callbacks.ModelCheckpoint(filepath=f'VGG16finalGAP_IMA.keras', save_best_only=True,monitor="val_accuracy"),
+#                                         WandbMetricsLogger(),
+#                                         WandbModelCheckpoint(filepath="VGG16finalGAP_IMA.keras", save_best_only=True,monitor="val_accuracy")
+#                                         ])

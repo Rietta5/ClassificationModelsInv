@@ -21,6 +21,28 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import pandas as pd
 
+## WandB
+import wandb
+from wandb.integration.keras import WandbMetricsLogger, WandbModelCheckpoint
+
+config = {
+     "model": "VGG",
+     "batch_size": 256//8,
+     "learning_rate": 1e-3,
+     "epochs": 25, # 1500
+     "dropout":0,
+     "L2": 1e-4
+}
+wandb.init(project="ClassificationModelsInv",
+           mode="online",
+           job_type="training",
+           config=config)
+config = wandb.config
+
+## Semilla aleatoria
+
+tf.keras.utils.set_random_seed(666)
+
 ## Datos
 
 i = 256
@@ -71,13 +93,22 @@ model_VGG16 = tf.keras.Sequential([
     tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(x*255.)), #, data_format=None
     VGG16,
     tf.keras.layers.Flatten(),
-    tf.keras.layers.Dense(160, activation = "softmax")
+#     tf.keras.layers.Dropout(config.dropout),
+    tf.keras.layers.Dense(160, kernel_regularizer=tf.keras.regularizers.L2(l2=config.L2), activation = "softmax")
 ])
 
 model_VGG16.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-history = model_VGG16.fit(dst_train, epochs = 1500, validation_data = dst_val,
-                            callbacks = [tf.keras.callbacks.EarlyStopping(patience=5),
-                                        tf.keras.callbacks.ModelCheckpoint(filepath=f'VGG16_IMA.keras', save_best_only=True)])
+model_VGG16.build(1)
+tf.keras.utils.plot_model(model_VGG16,
+                          "model_VGG16.png")
+
+# history = model_VGG16.fit(dst_train, epochs = 1500, validation_data = dst_val,
+#                             callbacks = [tf.keras.callbacks.EarlyStopping(patience=25,monitor="val_accuracy"),
+#                                         tf.keras.callbacks.ModelCheckpoint(filepath=f'VGG_IMA_L2.keras', save_best_only=True,monitor="val_accuracy"),
+#                                         WandbMetricsLogger(),
+#                                         # WandbModelCheckpoint(filepath="VGG16_IMA.keras", save_best_only=True,monitor="val_accuracy")
+#                                         ])
+
 
 
 

@@ -73,6 +73,7 @@ for capa in VGG16.layers:
 inputs = tf.keras.Input((i,i,1))
 inputs = VGG16.input
 
+
 GAPMP1 = layers.GlobalAveragePooling2D()(VGG16.layers[3].output)
 GAPMP2 = layers.GlobalAveragePooling2D()(VGG16.layers[6].output)
 GAPMP3 = layers.GlobalAveragePooling2D()(VGG16.layers[10].output)
@@ -92,7 +93,7 @@ ModeloVGGGAP = tf.keras.Sequential([prepro, ModeloVGGGAP])
 ins = np.ones((1,i,i,3))
 ModeloVGGGAP(ins)
 ModeloVGGGAP.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-ModeloVGGGAP.load_weights(f"VGG16GAP_IMA.keras", skip_mismatch=False)
+ModeloVGGGAP.load_weights(f"VGGGAP_IMA.keras", skip_mismatch=False)
 
  
 #TRASLACION

@@ -46,7 +46,7 @@ imgs_test = df_test.path
 labels_test = df_test.label_subset
 
 dst_test = tf.data.Dataset.from_tensor_slices((imgs_test, labels_test))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True)
+        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE)#.batch(256//4, drop_remainder=True)
 
 df_val = pd.read_csv("imagenet_val.csv")
 imgs_val = df_val.path
@@ -73,13 +73,15 @@ for capa in VGG16.layers:
 inputs = tf.keras.Input((i,i,1))
 inputs = VGG16.input
 
-GAPMP1 = layers.GlobalAveragePooling2D()(VGG16.layers[3].output)
-GAPMP2 = layers.GlobalAveragePooling2D()(VGG16.layers[6].output)
-GAPMP3 = layers.GlobalAveragePooling2D()(VGG16.layers[10].output)
-GAPMP4 = layers.GlobalAveragePooling2D()(VGG16.layers[14].output)
+# salida_flatten = layers.Flatten()(VGG16.output)
+
+# GAPMP1 = layers.GlobalAveragePooling2D()(VGG16.layers[3].output)
+# GAPMP2 = layers.GlobalAveragePooling2D()(VGG16.layers[6].output)
+# GAPMP3 = layers.GlobalAveragePooling2D()(VGG16.layers[10].output)
+# GAPMP4 = layers.GlobalAveragePooling2D()(VGG16.layers[14].output)
 GAPMP5 = layers.GlobalAveragePooling2D()(VGG16.layers[18].output)
 
-GAPFinal = layers.Concatenate(axis=-1)([GAPMP1,GAPMP2,GAPMP3,GAPMP4,GAPMP5])
+GAPFinal = layers.Concatenate(axis=-1)([GAPMP5])
 outputs = layers.Dense(160, activation = "softmax")(GAPFinal)
 
 ModeloVGGGAP = tf.keras.Model(inputs,outputs)
@@ -92,41 +94,40 @@ ModeloVGGGAP = tf.keras.Sequential([prepro, ModeloVGGGAP])
 ins = np.ones((1,i,i,3))
 ModeloVGGGAP(ins)
 ModeloVGGGAP.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-ModeloVGGGAP.load_weights(f"./modelos_semilla/VGGGAP_IMA.keras", skip_mismatch=False)
+ModeloVGGGAP.load_weights(f"./modelos_semilla/VGG16finalGAP_IMA.keras", skip_mismatch=False)
 
-#ESCALA
-escalas = pd.read_csv("escalas_imagenet.csv")
-a = np.linspace(0,len(escalas)-1, num = 20, dtype = int)
+#ROTACION
+@tf.numpy_function(Tout=tf.float32)
+def rotar2(X, crop, rotacion):
+  h, w, c = X.shape
+  final_imagesize = crop
+  ini_crop = ((h//2)-(final_imagesize[0]//2),(w//2)-(final_imagesize[1]//2))
 
-escalas = escalas.iloc[a,-1].to_list()
+  height, width = h, w
+  image_center = (width//2, height//2)
+  rot_mat = cv2.getRotationMatrix2D(image_center, rotacion, 1.0)
+  result = cv2.warpAffine(X, rot_mat, dsize=(width, height), flags=cv2.INTER_LINEAR)
+  result = result[ini_crop[0]:ini_crop[0]+final_imagesize[0],ini_crop[1]:ini_crop[1]+final_imagesize[1],:]
+  return result
 
-total = len(escalas)
-for i, escala in enumerate(escalas,1):
-    def escalar_mosaico(data, labels, size = (256,256)):
-        Xtest_escala = tf.image.resize(data, size=(int(data.shape[1]*escala), int(data.shape[2]*escala)))#.numpy()
-        paddings = tf.constant([[0,0], [Xtest_escala.shape[1], Xtest_escala.shape[1],], [Xtest_escala.shape[2], Xtest_escala.shape[2]], [0, 0]])
-        mosaico = tf.pad(Xtest_escala, paddings, mode = "SYMMETRIC")
-        while mosaico.shape[1] < min(size):
-            paddings = tf.constant([[0,0], [mosaico.shape[1], mosaico.shape[1],], [mosaico.shape[2], mosaico.shape[2]], [0, 0]])
-            mosaico = tf.pad(mosaico, paddings, mode = "SYMMETRIC")
+rotaciones = np.arange(0,21, 1)
+total = len(rotaciones)
 
-        b, h, w, c = mosaico.shape
-        final_imagesize = size
+for i, rot in enumerate(rotaciones):
 
-        ini_crop1 = (h//2)-(final_imagesize[0]//2)
-        ini_crop2 = (w//2)-(final_imagesize[1]//2)
-        Xtrain_big = mosaico[:,ini_crop1:ini_crop1+final_imagesize[0],ini_crop2:ini_crop2+final_imagesize[1],:]
+    def f_rotar(imgs, labels):
+        imgs = crear_mosaico(imgs[None,:,:,:])[0]
+        imgs = rotar2(imgs, (256, 256), rot)
+        return  tf.ensure_shape(imgs, [256,256,3]), labels
+    
+    dst_test_rdy = dst_test.map(f_rotar, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True, num_parallel_calls=tf.data.AUTOTUNE).prefetch(1)
 
-        return Xtrain_big, labels
-
-    dst_test_rdy = dst_test.map(escalar_mosaico, num_parallel_calls=tf.data.AUTOTUNE).prefetch(1)
-
-    results = ModeloVGGGAP.evaluate(dst_test_rdy, return_dict=True)
-    metricas[escala] = results
+    results = ModeloVGGGAP.evaluate(dst_test_rdy, return_dict=True, verbose=1)
+    metricas[rot] = results
     print(f"{i}/{total}")
 
 
-with open(f"met_VGGGAP_esc.pkl", "wb") as f:
+with open(f"met_VGGfinalGAP_rot.pkl", "wb") as f:
     dump(metricas, f)
 
 

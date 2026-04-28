@@ -39,7 +39,7 @@ imgs_train = df_train.path
 labels_train = df_train.label_subset
 
 dst_train = tf.data.Dataset.from_tensor_slices((imgs_train, labels_train))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE)#.batch(256//8, drop_remainder=True)
+        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
 
 df_test = pd.read_csv("imagenet_test.csv")
 imgs_test = df_test.path
@@ -61,49 +61,41 @@ i = 256
 
 metricas = {}
 
-ResNet50 = tf.keras.applications.resnet50.ResNet50(
+VGG16 = tf.keras.applications.vgg16.VGG16(
 include_top=False,
 weights='imagenet',
-input_shape=(i,i,3)
+input_shape=(i,i,3),
 )
 
-for capa in ResNet50.layers:
+for capa in VGG16.layers:
     capa.trainable = False
 
-# model_ResNet50 = tf.keras.Sequential([
-#     ResNet50,
-#     tf.keras.layers.Flatten(),
-#     tf.keras.layers.Dense(10, activation = "softmax")
-# ])
+inputs = tf.keras.Input((i,i,1))
+inputs = VGG16.input
 
-capas_out = []
+# salida_flatten = layers.Flatten()(VGG16.output)
 
-for j,layer in enumerate(ResNet50.layers):
-    if layer.name.endswith("out"):
-        print(j,layer.name)
-        capas_out.append(layer)
+# GAPMP1 = layers.GlobalAveragePooling2D()(VGG16.layers[3].output)
+# GAPMP2 = layers.GlobalAveragePooling2D()(VGG16.layers[6].output)
+# GAPMP3 = layers.GlobalAveragePooling2D()(VGG16.layers[10].output)
+# GAPMP4 = layers.GlobalAveragePooling2D()(VGG16.layers[14].output)
+GAPMP5 = layers.GlobalAveragePooling2D()(VGG16.layers[18].output)
 
-inputs = ResNet50.input
-GAPS = [layers.GlobalAveragePooling2D()(l.output) for l in capas_out]
-
-GAPFinal = layers.Concatenate(axis=-1)(GAPS)
-
+GAPFinal = layers.Concatenate(axis=-1)([GAPMP5])
 outputs = layers.Dense(160, activation = "softmax")(GAPFinal)
 
-ModeloRNGAP = tf.keras.Model(inputs,outputs)
-prepro = tf.keras.layers.Lambda(lambda x: tf.keras.applications.resnet50.preprocess_input(tf.convert_to_tensor(x)*255.))
+ModeloVGGGAP = tf.keras.Model(inputs,outputs)
 
-ModeloRNGAP = tf.keras.Sequential([prepro, ModeloRNGAP])
+prepro = tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(
+        tf.convert_to_tensor(x)*255., data_format=None))
 
-
-ModeloRNGAP.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
+ModeloVGGGAP = tf.keras.Sequential([prepro, ModeloVGGGAP])
 
 ins = np.ones((1,i,i,3))
-ModeloRNGAP(ins)
-ModeloRNGAP.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-ModeloRNGAP.load_weights(f"ResNet50GAP_IMA.keras", skip_mismatch=False)
+ModeloVGGGAP(ins)
+ModeloVGGGAP.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
+ModeloVGGGAP.load_weights(f"./modelos_semilla/VGG16finalGAP_IMA.keras", skip_mismatch=False)
 
- 
 #ESCALA
 escalas = pd.read_csv("escalas_imagenet.csv")
 a = np.linspace(0,len(escalas)-1, num = 20, dtype = int)
@@ -131,14 +123,13 @@ for i, escala in enumerate(escalas,1):
 
     dst_test_rdy = dst_test.map(escalar_mosaico, num_parallel_calls=tf.data.AUTOTUNE).prefetch(1)
 
-    results = ModeloRNGAP.evaluate(dst_test_rdy, return_dict=True)
+    results = ModeloVGGGAP.evaluate(dst_test_rdy, return_dict=True)
     metricas[escala] = results
     print(f"{i}/{total}")
 
-with open(f"met_ResNet50GAP_esc.pkl", "wb") as f:
+
+with open(f"met_VGGfinalGAP_esc.pkl", "wb") as f:
     dump(metricas, f)
-
-
 
 
 

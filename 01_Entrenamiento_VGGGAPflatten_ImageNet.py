@@ -26,10 +26,10 @@ import wandb
 from wandb.integration.keras import WandbMetricsLogger, WandbModelCheckpoint
 
 config = {
-     "model": "ResNetGAPINI0",
+     "model": "VGG16GAPflatten",
      "batch_size": 256//8,
      "learning_rate": 1e-3,
-     "epochs": 5000,
+     "epochs": 1500,
 }
 wandb.init(project="ClassificationModelsInv",
            mode="online",
@@ -37,12 +37,13 @@ wandb.init(project="ClassificationModelsInv",
            config=config)
 config = wandb.config
 
+## Semilla aleatoria
+
+tf.keras.utils.set_random_seed(666)
+
 ## Datos
 
-
 i = 256
-
-
 
 def preprocess(path,
                label,
@@ -76,51 +77,42 @@ dst_val = tf.data.Dataset.from_tensor_slices((imgs_val, labels_val))\
         .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
 
 
-ResNet50 = tf.keras.applications.resnet50.ResNet50(
+VGG16 = tf.keras.applications.vgg16.VGG16(
 include_top=False,
 weights='imagenet',
-input_shape=(i,i,3)
+input_shape=(i,i,3),
 )
 
-for capa in ResNet50.layers:
+for capa in VGG16.layers:
     capa.trainable = False
 
-# model_ResNet50 = tf.keras.Sequential([
-#     ResNet50,
-#     tf.keras.layers.Flatten(),
-#     tf.keras.layers.Dense(10, activation = "softmax")
-# ])
+inputs = tf.keras.Input((i,i,1))
+inputs = VGG16.input
 
-capas_out = []
+salida_flatten = layers.Flatten()(VGG16.output)
 
-for j,layer in enumerate(ResNet50.layers):
-    if layer.name.endswith("out"):
-        print(j,layer.name)
-        capas_out.append(layer)
+GAPMP1 = layers.GlobalAveragePooling2D()(VGG16.layers[3].output)
+GAPMP2 = layers.GlobalAveragePooling2D()(VGG16.layers[6].output)
+GAPMP3 = layers.GlobalAveragePooling2D()(VGG16.layers[10].output)
+GAPMP4 = layers.GlobalAveragePooling2D()(VGG16.layers[14].output)
+GAPMP5 = layers.GlobalAveragePooling2D()(VGG16.layers[18].output)
 
-inputs = ResNet50.input
-GAPS = [layers.GlobalAveragePooling2D()(l.output) for l in capas_out]
-
-GAPFinal = layers.Concatenate(axis=-1)(GAPS)
-
+GAPFinal = layers.Concatenate(axis=-1)([GAPMP1,GAPMP2,GAPMP3,GAPMP4,GAPMP5, salida_flatten])
 outputs = layers.Dense(160, activation = "softmax")(GAPFinal)
 
-ModeloRNGAP = tf.keras.Model(inputs,outputs)
-prepro = tf.keras.layers.Lambda(lambda x: tf.keras.applications.resnet50.preprocess_input(
+ModeloVGGGAP = tf.keras.Model(inputs,outputs)
+
+prepro = tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(
         tf.convert_to_tensor(x)*255., data_format=None))
 
-ModeloRNGAP = tf.keras.Sequential([prepro, ModeloRNGAP])
-weights_gaps = ModeloRNGAP.layers[-1].get_weights()
-weights_gaps[0][:-2048] = 0
-ModeloRNGAP.layers[-1].set_weights(weights_gaps)
+ModeloVGGGAP = tf.keras.Sequential([prepro, ModeloVGGGAP])
 
-
-ModeloRNGAP.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-history = ModeloRNGAP.fit(dst_train, epochs = 5000, validation_data = dst_val,
-                            callbacks = [tf.keras.callbacks.EarlyStopping(patience=5),
-                                        tf.keras.callbacks.ModelCheckpoint(filepath=f'ResNet50GAPINI0_IMA.keras', save_best_only=True),
+ModeloVGGGAP.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
+history = ModeloVGGGAP.fit(dst_train, epochs = 1500, validation_data = dst_val,
+                            callbacks = [tf.keras.callbacks.EarlyStopping(patience=25,monitor="val_accuracy"),
+                                        tf.keras.callbacks.ModelCheckpoint(filepath=f'VGG16GAPflatten_IMA.keras', save_best_only=True,monitor="val_accuracy"),
                                         WandbMetricsLogger(),
-                                        WandbModelCheckpoint(filepath="ResNet50GAPINI0_IMA.keras", save_best_only=True)
+                                        WandbModelCheckpoint(filepath="VGG16GAPflatten_IMA.keras", save_best_only=True,monitor="val_accuracy")
                                         ])
 
 

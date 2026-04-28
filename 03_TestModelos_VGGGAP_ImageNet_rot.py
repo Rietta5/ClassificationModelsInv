@@ -92,7 +92,7 @@ ModeloVGGGAP = tf.keras.Sequential([prepro, ModeloVGGGAP])
 ins = np.ones((1,i,i,3))
 ModeloVGGGAP(ins)
 ModeloVGGGAP.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-ModeloVGGGAP.load_weights(f"VGG16GAP_IMA.keras", skip_mismatch=False)
+ModeloVGGGAP.load_weights(f"./modelos_semilla/VGGGAP_IMA.keras", skip_mismatch=False)
 
 #ROTACION
 @tf.numpy_function(Tout=tf.float32)

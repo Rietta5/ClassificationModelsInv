@@ -82,7 +82,7 @@ model_VGG16.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_cat
 ins = np.ones((1,i,i,3))
 model_VGG16(ins)
 model_VGG16.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-model_VGG16.load_weights(f"VGG16_IMA.keras", skip_mismatch=False)
+model_VGG16.load_weights(f"./modelos_semilla/VGG16_IMA.keras", skip_mismatch=False)
 
  
 #ROTACION

@@ -82,7 +82,11 @@ model.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
 model.load_weights(f"ResNet50_IMA.keras", skip_mismatch=False)
         
 #ESCALA
-escalas = [0.1,0.3,0.5,0.6,0.8,1,1.1,1.3,1.5,1.6,1.8,2]
+escalas = pd.read_csv("escalas_imagenet.csv")
+a = np.linspace(0,len(escalas)-1, num = 20, dtype = int)
+
+escalas = escalas.iloc[a,-1].to_list()
+
 total = len(escalas)
 for i, escala in enumerate(escalas,1):
     def escalar_mosaico(data, labels, size = (256,256)):
