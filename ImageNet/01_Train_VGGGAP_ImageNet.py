@@ -1,116 +1,110 @@
-from tqdm.auto import tqdm
+"""
+Training script for VGG16 model with Multi-layer Global Average Pooling (GAP).
+This version concatenates GAP outputs from multiple convolutional blocks.
+"""
 
-from pathlib import Path
-import numpy as np
 import pandas as pd
-import scipy
-from pickle import dump, load
-import matplotlib.pyplot as plt
-import cv2
-from IPython.display import clear_output
 import tensorflow as tf
-# import plotly.express as px
 from tensorflow.keras import layers
-from functools import partial
-from PIL import Image
-import re
-
-from utils import *
-
-import torch
-import piq
-from sklearn.model_selection import train_test_split
-
-## WandB
 import wandb
-from wandb.integration.keras import WandbMetricsLogger, WandbModelCheckpoint
+from wandb.integration.keras import WandbMetricsLogger
 
-config = {
-     "model": "VGGGAP_regu",
-     "batch_size": 256//8,
-     "learning_rate": 1e-3,
-     "epochs": 1500,
-}
-wandb.init(project="ClassificationModelsInv",
-           mode="online",
-           job_type="training",
-           config=config)
-config = wandb.config
-
-## Semilla aleatoria
-
+# Set random seed for reproducibility
 tf.keras.utils.set_random_seed(666)
 
-## Datos
+# Configuration for Weights & Biases
+config = {
+    "model": "VGGGAP_regu",
+    "batch_size": 32,
+    "learning_rate": 1e-3,
+    "epochs": 1500,
+}
 
-i = 256
+wandb.init(
+    project="ClassificationModelsInv",
+    mode="online",
+    job_type="training",
+    config=config
+)
+config = wandb.config
 
+def preprocess(path, label):
+    """
+    Load and preprocess an image from a path.
+    """
+    img = tf.io.read_file(path)
+    img = tf.image.decode_jpeg(img, channels=3)
+    img = tf.image.convert_image_dtype(img, dtype=tf.float32)
+    img = tf.image.resize(img, size=(256, 256))
+    return img, label
 
-def preprocess(path,
-               label,
-               ):
-        img = tf.io.read_file(path)
-        img = tf.image.decode_jpeg(img, channels=3)
-        img = tf.image.convert_image_dtype(img, dtype=tf.float32)
-        img = tf.image.resize(img, size=(256,256))
+def load_dataset(csv_path, batch_size=32):
+    """Helper function to load dataset from CSV."""
+    df = pd.read_csv(csv_path)
+    return tf.data.Dataset.from_tensor_slices((df.path, df.label_subset)) \
+        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE) \
+        .batch(batch_size, drop_remainder=True)
 
-        return img, label
+# Load datasets
+dst_train = load_dataset("imagenet_train.csv", config.batch_size)
+dst_test = load_dataset("imagenet_test.csv", config.batch_size)
+dst_val = load_dataset("imagenet_val.csv", config.batch_size)
 
-df_train = pd.read_csv("imagenet_train.csv")
-imgs_train = df_train.path
-labels_train = df_train.label_subset
-
-dst_train = tf.data.Dataset.from_tensor_slices((imgs_train, labels_train))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
-
-df_test = pd.read_csv("imagenet_test.csv")
-imgs_test = df_test.path
-labels_test = df_test.label_subset
-
-dst_test = tf.data.Dataset.from_tensor_slices((imgs_test, labels_test))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
-
-df_val = pd.read_csv("imagenet_val.csv")
-imgs_val = df_val.path
-labels_val = df_val.label_subset
-
-dst_val = tf.data.Dataset.from_tensor_slices((imgs_val, labels_val))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
-
-
-VGG16 = tf.keras.applications.vgg16.VGG16(
-include_top=False,
-weights='imagenet',
-input_shape=(i,i,3),
+# Build VGG16 base model
+vgg_base = tf.keras.applications.vgg16.VGG16(
+    include_top=False,
+    weights='imagenet',
+    input_shape=(256, 256, 3),
 )
 
-for capa in VGG16.layers:
-    capa.trainable = False
+# Freeze convolutional layers
+for layer in vgg_base.layers:
+    layer.trainable = False
 
-inputs = tf.keras.Input((i,i,1))
-inputs = VGG16.input
+# Model architecture with multi-layer GAP
+inputs = vgg_base.input
 
-# salida_flatten = layers.Flatten()(VGG16.output)
+# Extract outputs from different blocks
+# Layers: 3 (block1_pool), 6 (block2_pool), 10 (block3_pool), 14 (block4_pool), 18 (block5_pool)
+gap1 = layers.GlobalAveragePooling2D()(vgg_base.layers[3].output)
+gap2 = layers.GlobalAveragePooling2D()(vgg_base.layers[6].output)
+gap3 = layers.GlobalAveragePooling2D()(vgg_base.layers[10].output)
+gap4 = layers.GlobalAveragePooling2D()(vgg_base.layers[14].output)
+gap5 = layers.GlobalAveragePooling2D()(vgg_base.layers[18].output)
 
-GAPMP1 = layers.GlobalAveragePooling2D()(VGG16.layers[3].output)
-GAPMP2 = layers.GlobalAveragePooling2D()(VGG16.layers[6].output)
-GAPMP3 = layers.GlobalAveragePooling2D()(VGG16.layers[10].output)
-GAPMP4 = layers.GlobalAveragePooling2D()(VGG16.layers[14].output)
-GAPMP5 = layers.GlobalAveragePooling2D()(VGG16.layers[18].output)
+# Concatenate all GAP outputs
+gap_combined = layers.Concatenate(axis=-1)([gap1, gap2, gap3, gap4, gap5])
 
-GAPFinal = layers.Concatenate(axis=-1)([GAPMP1,GAPMP2,GAPMP3,GAPMP4,GAPMP5])
-outputs = layers.Dense(160, activation = "softmax",
-                       kernel_regularizer=tf.keras.regularizers.L2(l2=1e-4))(GAPFinal)
+# Final classifier
+outputs = layers.Dense(
+    160, 
+    activation="softmax",
+    kernel_regularizer=tf.keras.regularizers.L2(l2=1e-4)
+)(gap_combined)
 
-ModeloVGGGAP = tf.keras.Model(inputs,outputs)
+modelo_vgg_gap = tf.keras.Model(inputs=inputs, outputs=outputs)
 
+# Preprocessing lambda
 prepro = tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(
-        tf.convert_to_tensor(x)*255., data_format=None))
+    tf.convert_to_tensor(x) * 255.0))
 
-ModeloVGGGAP = tf.keras.Sequential([prepro, ModeloVGGGAP])
+final_model = tf.keras.Sequential([prepro, modelo_vgg_gap])
 
-ModeloVGGGAP.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-history = ModeloVGGGAP.fit(dst_train, epochs = 1500, validation_data = dst_val,
-                            callbacks = [tf.keras.callbacks.EarlyStopping(patience=25,monitor="val_accuracy"),
-                                        tf.keras.callbacks.ModelCheckpoint(filepath=f'VGGGAP_IMA_regu.keras', save_best_only=True,monitor="val_accuracy"),
-                                        WandbMetricsLogger()])
+# Compile model
+final_model.compile(
+    optimizer="adam", 
+    metrics=["accuracy"], 
+    loss="sparse_categorical_crossentropy"
+)
+
+# Training
+history = final_model.fit(
+    dst_train, 
+    epochs=config.epochs, 
+    validation_data=dst_val,
+    callbacks=[
+        tf.keras.callbacks.EarlyStopping(patience=25, monitor="val_accuracy"),
+        tf.keras.callbacks.ModelCheckpoint(filepath='VGGGAP_IMA_regu.keras', save_best_only=True, monitor="val_accuracy"),
+        WandbMetricsLogger()
+    ]
+)

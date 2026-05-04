@@ -1,147 +1,99 @@
-from tqdm.auto import tqdm
+"""
+Testing script for VGG16 model on ImageNet with Translation (Traslación) transformations.
+Evaluates model performance across a grid of horizontal and vertical shifts.
+"""
 
-from pathlib import Path
 import numpy as np
 import pandas as pd
-import scipy
-from pickle import dump, load
-import matplotlib.pyplot as plt
-import cv2
-from IPython.display import clear_output
 import tensorflow as tf
-# import plotly.express as px
-from tensorflow.keras import layers
-from functools import partial
-from PIL import Image
-import re
+from pickle import dump
+from utils import crear_mosaico, trasladar2
 
-from utils import *
+# Set random seed
+tf.keras.utils.set_random_seed(666)
 
-import torch
-import piq
+def preprocess(path, label):
+    """
+    Load and preprocess an image from a path.
+    """
+    img = tf.io.read_file(path)
+    img = tf.image.decode_jpeg(img, channels=3)
+    img = tf.image.convert_image_dtype(img, dtype=tf.float32)
+    img = tf.image.resize(img, size=(256, 256))
+    return img, label
 
-## Datos
-crop = 256
-desps = 50
+def load_dataset(csv_path, batch_size=64):
+    """Helper function to load dataset from CSV."""
+    df = pd.read_csv(csv_path)
+    return tf.data.Dataset.from_tensor_slices((df.path, df.label_subset)) \
+        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE) \
+        .batch(batch_size, drop_remainder=True)
 
-def preprocess(path,
-               label,
-               ):
-        img = tf.io.read_file(path)
-        img = tf.image.decode_jpeg(img, channels=3)
-        img = tf.image.convert_image_dtype(img, dtype=tf.float32)
-        img = tf.image.resize(img, size=(256,256))
+# Load datasets
+dst_test = load_dataset("imagenet_test.csv", 64)
 
-        return img, label
-
-df_train = pd.read_csv("imagenet_train.csv")
-imgs_train = df_train.path
-labels_train = df_train.label_subset
-
-dst_train = tf.data.Dataset.from_tensor_slices((imgs_train, labels_train))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
-
-df_test = pd.read_csv("imagenet_test.csv")
-imgs_test = df_test.path
-labels_test = df_test.label_subset
-
-dst_test = tf.data.Dataset.from_tensor_slices((imgs_test, labels_test))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True)
-
-df_val = pd.read_csv("imagenet_val.csv")
-imgs_val = df_val.path
-labels_val = df_val.label_subset
-
-dst_val = tf.data.Dataset.from_tensor_slices((imgs_val, labels_val))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True)
-
-# for crop, desps in zip([56, 128, 256], [10, 25, 50]):
-crop = 256
-i = 256
-
-metricas = {}
-
-VGG16 = tf.keras.applications.vgg16.VGG16(
+# Build VGG16 model
+vgg_base = tf.keras.applications.vgg16.VGG16(
     include_top=False,
     weights='imagenet',
-    input_shape=(i,i,3),
+    input_shape=(256, 256, 3),
 )
 
-for capa in VGG16.layers:
-    capa.trainable = False
+for layer in vgg_base.layers:
+    layer.trainable = False
 
 model_VGG16 = tf.keras.Sequential([
-    tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(x*255.)), #, data_format=None
-    VGG16,
+    tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(x * 255.0)),
+    vgg_base,
     tf.keras.layers.Flatten(),
-    tf.keras.layers.Dense(160, activation = "softmax")
+    tf.keras.layers.Dense(160, activation="softmax")
 ])
 
-model_VGG16.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
+# Compile and load weights
+model_VGG16.compile(optimizer="adam", metrics=["accuracy"], loss="sparse_categorical_crossentropy")
+model_VGG16(np.ones((1, 256, 256, 3)))  # Init weights
+model_VGG16.load_weights("VGG16_IMA.keras", skip_mismatch=False)
 
-ins = np.ones((1,i,i,3))
-model_VGG16(ins)
-model_VGG16.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-model_VGG16.load_weights(f"VGG16_IMA.keras", skip_mismatch=False)
+# Evaluation with Translation
+CROP_SIZE = 256
+MAX_SHIFT = 50
+desps_h = range(-MAX_SHIFT, MAX_SHIFT + 1)
+desps_v = range(-MAX_SHIFT, MAX_SHIFT + 1)
 
- 
-#TRASLACION
-desps_h = range(-desps,desps+1)
-desps_v = range(-desps,desps+1)
+metricas = {}
+total_steps = len(desps_h) * len(desps_v)
+current_step = 0
 
-for desp_h in desps_h:
-    for desp_v in desps_v:
-        def postprocess(img, label):
-            img = crear_mosaico(img)
-            img = trasladar2(img, crop=(crop, crop), desp_h=desp_h, desp_v=desp_v)
-            return img, label
-        dst_test_t = dst_test.map(postprocess)
+print(f"Starting translation evaluation for {total_steps} combinations...")
 
-        results = model_VGG16.evaluate(dst_test_t, return_dict=True)
-        metricas[(desp_h, desp_v)] = results
+for dh in desps_h:
+    for dv in desps_v:
+        current_step += 1
+        if current_step % 100 == 0:
+            print(f"Processing step {current_step}/{total_steps} (dh={dh}, dv={dv})")
 
-with open(f"met_VGG_IMA.pkl", "wb") as f:
+        def apply_translation(img, label):
+            # Apply mosaic padding and then translate
+            img_mosaic = crear_mosaico(img)
+            img_translated = trasladar2(
+                img_mosaic, 
+                crop=(CROP_SIZE, CROP_SIZE), 
+                desp_h=dh, 
+                desp_v=dv
+            )
+            return img_translated, label
+        
+        # Apply transformation to the test dataset
+        dst_test_translated = dst_test.map(
+            apply_translation, 
+            num_parallel_calls=tf.data.AUTOTUNE
+        ).prefetch(1)
+
+        results = model_VGG16.evaluate(dst_test_translated, return_dict=True, verbose=0)
+        metricas[(dh, dv)] = results
+
+# Save results
+output_path = "met_VGG_IMA.pkl"
+with open(output_path, "wb") as f:
     dump(metricas, f)
-
-#ROTACION
-        
-# rotaciones = np.arange(0,11, 0.5)
-
-# for rot in rotaciones:
-
-#     test = rotar(Xtest, rotacion = rot)
-#     dst_test = tf.data.Dataset.from_tensor_slices((test, Ytest)).batch(512//8, drop_remainder=True)
-
-#     results = model.evaluate(dst_test, return_dict=True)
-#     metricas[rot] = results
-
-# with open(f"met_ResNet50_{crop}_rot.pkl", "wb") as f:
-#     dump(metricas, f)
-        
-#ESCALA
-
-# escalas  = escalas = [0.1,0.3,0.5,0.6,0.8,1,1.1,1.3,1.5,1.6,1.8,2]
-# for escala in escalas:
-
-#     test = escalar(Xtest, escala=escala, size = 56)
-#     dst_test = tf.data.Dataset.from_tensor_slices((test, Ytest)).batch(512//8, drop_remainder=True)
-
-#     results = model.evaluate(dst_test, return_dict=True)
-#     metricas[escala] = results
-
-
-# with open(f"met_ResNet50_{crop}_esc.pkl", "wb") as f:
-#     dump(metricas, f)
-
-
-
-
-
-
-
-    
-
-
- 
-
-    
+print(f"Results saved to {output_path}")

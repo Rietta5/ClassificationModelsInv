@@ -1,119 +1,102 @@
-from tqdm.auto import tqdm
+"""
+Testing script for VGG16 model on ImageNet with Rotation transformations.
+Uses OpenCV for rotation via tf.numpy_function.
+"""
 
-from pathlib import Path
+import cv2
 import numpy as np
 import pandas as pd
-import scipy
-from pickle import dump, load
-import matplotlib.pyplot as plt
-import cv2
-from IPython.display import clear_output
 import tensorflow as tf
-# import plotly.express as px
-from tensorflow.keras import layers
-from functools import partial
-from PIL import Image
-import re
+from pickle import dump
+from utils import crear_mosaico
 
-from utils import *
+# Set random seed
+tf.keras.utils.set_random_seed(666)
 
-import torch
-import piq
+def preprocess(path, label):
+    """
+    Load and preprocess an image from a path.
+    """
+    img = tf.io.read_file(path)
+    img = tf.image.decode_jpeg(img, channels=3)
+    img = tf.image.convert_image_dtype(img, dtype=tf.float32)
+    img = tf.image.resize(img, size=(256, 256))
+    return img, label
 
-## Datos
-crop = 256
-desps = 50
+def load_dataset(csv_path):
+    """Helper function to load dataset from CSV."""
+    df = pd.read_csv(csv_path)
+    return tf.data.Dataset.from_tensor_slices((df.path, df.label_subset)) \
+        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE)
 
-def preprocess(path,
-               label,
-               ):
-        img = tf.io.read_file(path)
-        img = tf.image.decode_jpeg(img, channels=3)
-        img = tf.image.convert_image_dtype(img, dtype=tf.float32)
-        img = tf.image.resize(img, size=(256,256))
+# Load test dataset (without batching yet, as rotation is applied to individual images)
+dst_test = load_dataset("imagenet_test.csv")
 
-        return img, label
-
-df_train = pd.read_csv("imagenet_train.csv")
-imgs_train = df_train.path
-labels_train = df_train.label_subset
-
-dst_train = tf.data.Dataset.from_tensor_slices((imgs_train, labels_train))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
-
-df_test = pd.read_csv("imagenet_test.csv")
-imgs_test = df_test.path
-labels_test = df_test.label_subset
-
-dst_test = tf.data.Dataset.from_tensor_slices((imgs_test, labels_test))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE)#.batch(256//4, drop_remainder=True)
-
-df_val = pd.read_csv("imagenet_val.csv")
-imgs_val = df_val.path
-labels_val = df_val.label_subset
-
-dst_val = tf.data.Dataset.from_tensor_slices((imgs_val, labels_val))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True)
-
-# for crop, desps in zip([56, 128, 256], [10, 25, 50]):
-crop = 256
-i = 256
-
-metricas = {}
-
-VGG16 = tf.keras.applications.vgg16.VGG16(
+# Build VGG16 model
+vgg_base = tf.keras.applications.vgg16.VGG16(
     include_top=False,
     weights='imagenet',
-    input_shape=(i,i,3),
+    input_shape=(256, 256, 3),
 )
 
-for capa in VGG16.layers:
-    capa.trainable = False
+for layer in vgg_base.layers:
+    layer.trainable = False
 
 model_VGG16 = tf.keras.Sequential([
-    tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(x*255.)), #, data_format=None
-    VGG16,
+    tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(x * 255.0)),
+    vgg_base,
     tf.keras.layers.Flatten(),
-    tf.keras.layers.Dense(160, activation = "softmax")
+    tf.keras.layers.Dense(160, activation="softmax")
 ])
 
-model_VGG16.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
+# Compile and load weights
+model_VGG16.compile(optimizer="adam", metrics=["accuracy"], loss="sparse_categorical_crossentropy")
+model_VGG16(np.ones((1, 256, 256, 3)))  # Init weights
+model_VGG16.load_weights("./modelos_semilla/VGG16_IMA.keras", skip_mismatch=False)
 
-ins = np.ones((1,i,i,3))
-model_VGG16(ins)
-model_VGG16.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-model_VGG16.load_weights(f"./modelos_semilla/VGG16_IMA.keras", skip_mismatch=False)
-
- 
-#ROTACION
 @tf.numpy_function(Tout=tf.float32)
-def rotar2(X, crop, rotacion):
-  h, w, c = X.shape
-  final_imagesize = crop
-  ini_crop = ((h//2)-(final_imagesize[0]//2),(w//2)-(final_imagesize[1]//2))
+def rotar_np(image, crop_size, angle):
+    """
+    Rotate an image using OpenCV.
+    """
+    h, w, _ = image.shape
+    center = (w // 2, h // 2)
+    rot_mat = cv2.getRotationMatrix2D(center, float(angle), 1.0)
+    rotated = cv2.warpAffine(image, rot_mat, (w, h), flags=cv2.INTER_LINEAR)
+    
+    # Crop to center
+    start_h = (h // 2) - (crop_size // 2)
+    start_w = (w // 2) - (crop_size // 2)
+    cropped = rotated[start_h:start_h + crop_size, start_w:start_w + crop_size, :]
+    return cropped
 
-  height, width = h, w
-  image_center = (width//2, height//2)
-  rot_mat = cv2.getRotationMatrix2D(image_center, rotacion, 1.0)
-  result = cv2.warpAffine(X, rot_mat, dsize=(width, height), flags=cv2.INTER_LINEAR)
-  result = result[ini_crop[0]:ini_crop[0]+final_imagesize[0],ini_crop[1]:ini_crop[1]+final_imagesize[1],:]
-  return result
-
-rotaciones = np.arange(0,21, 1)
-total = len(rotaciones)
+# Evaluation with Rotation
+rotaciones = np.arange(0, 21, 1)
+metricas = {}
+total_rots = len(rotaciones)
 
 for i, rot in enumerate(rotaciones):
+    print(f"Evaluating rotation {i}/{total_rots}: {rot} degrees")
 
-    def f_rotar(imgs, labels):
-        imgs = crear_mosaico(imgs[None,:,:,:])[0]
-        imgs = rotar2(imgs, (256, 256), rot)
-        return  tf.ensure_shape(imgs, [256,256,3]), labels
+    def apply_rotation(img, label):
+        # Create mosaic (tiled padding) using utility function
+        img_mosaic = crear_mosaico(img[None, :, :, :])[0]
+        # Apply rotation via numpy function
+        img_rotated = rotar_np(img_mosaic, 256, rot)
+        # Ensure shape for TF
+        return tf.ensure_shape(img_rotated, [256, 256, 3]), label
     
-    dst_test_rdy = dst_test.map(f_rotar, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True, num_parallel_calls=tf.data.AUTOTUNE).prefetch(1)
+    # Map rotation and batch
+    dst_test_rotated = dst_test.map(
+        apply_rotation, 
+        num_parallel_calls=tf.data.AUTOTUNE
+    ).batch(64, drop_remainder=True).prefetch(1)
 
-    results = model_VGG16.evaluate(dst_test_rdy, return_dict=True, verbose=1)
-    metricas[rot] = results
-    print(f"{i}/{total}")
+    results = model_VGG16.evaluate(dst_test_rotated, return_dict=True, verbose=1)
+    metricas[float(rot)] = results
 
-with open(f"met_VGG_rot.pkl", "wb") as f:
+# Save results
+output_path = "met_VGG_rot.pkl"
+with open(output_path, "wb") as f:
     dump(metricas, f)
+print(f"Results saved to {output_path}")

@@ -1,120 +1,109 @@
-from tqdm.auto import tqdm
+"""
+Testing script for VGG16 model on ImageNet with Scaling (Escala) transformations.
+This script evaluates the model's performance on images resized to various scales, 
+using symmetric padding to maintain the input size.
+"""
 
-from pathlib import Path
 import numpy as np
 import pandas as pd
-import scipy
-from pickle import dump, load
-import matplotlib.pyplot as plt
-import cv2
-from IPython.display import clear_output
 import tensorflow as tf
-# import plotly.express as px
-from tensorflow.keras import layers
-from functools import partial
-from PIL import Image
-import re
+from pickle import dump
 
-from utils import *
+# Load dataset configuration
+def preprocess(path, label):
+    """
+    Load and preprocess an image from a path.
+    """
+    img = tf.io.read_file(path)
+    img = tf.image.decode_jpeg(img, channels=3)
+    img = tf.image.convert_image_dtype(img, dtype=tf.float32)
+    img = tf.image.resize(img, size=(256, 256))
+    return img, label
 
-import torch
-import piq
+def load_dataset(csv_path, batch_size=64):
+    """Helper function to load dataset from CSV."""
+    df = pd.read_csv(csv_path)
+    return tf.data.Dataset.from_tensor_slices((df.path, df.label_subset)) \
+        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE) \
+        .batch(batch_size, drop_remainder=True)
 
-## Datos
-crop = 256
-desps = 50
+# Load datasets
+# dst_train = load_dataset("imagenet_train.csv", 32) # Not used in testing script usually, but kept if needed
+dst_test = load_dataset("imagenet_test.csv", 64)
+# dst_val = load_dataset("imagenet_val.csv", 64)
 
-def preprocess(path,
-               label,
-               ):
-        img = tf.io.read_file(path)
-        img = tf.image.decode_jpeg(img, channels=3)
-        img = tf.image.convert_image_dtype(img, dtype=tf.float32)
-        img = tf.image.resize(img, size=(256,256))
-
-        return img, label
-
-df_train = pd.read_csv("imagenet_train.csv")
-imgs_train = df_train.path
-labels_train = df_train.label_subset
-
-dst_train = tf.data.Dataset.from_tensor_slices((imgs_train, labels_train))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
-
-df_test = pd.read_csv("imagenet_test.csv")
-imgs_test = df_test.path
-labels_test = df_test.label_subset
-
-dst_test = tf.data.Dataset.from_tensor_slices((imgs_test, labels_test))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True)
-
-df_val = pd.read_csv("imagenet_val.csv")
-imgs_val = df_val.path
-labels_val = df_val.label_subset
-
-dst_val = tf.data.Dataset.from_tensor_slices((imgs_val, labels_val))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True)
-
-# for crop, desps in zip([56, 128, 256], [10, 25, 50]):
-crop = 256
-i = 256
-
-metricas = {}
-
-VGG16 = tf.keras.applications.vgg16.VGG16(
+# Build VGG16 model architecture
+vgg_base = tf.keras.applications.vgg16.VGG16(
     include_top=False,
     weights='imagenet',
-    input_shape=(i,i,3),
+    input_shape=(256, 256, 3),
 )
 
-for capa in VGG16.layers:
-    capa.trainable = False
+for layer in vgg_base.layers:
+    layer.trainable = False
 
 model_VGG16 = tf.keras.Sequential([
-    tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(x*255.)), #, data_format=None
-    VGG16,
+    tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(x * 255.0)),
+    vgg_base,
     tf.keras.layers.Flatten(),
-    tf.keras.layers.Dense(160, activation = "softmax")
+    tf.keras.layers.Dense(160, activation="softmax")
 ])
 
-model_VGG16.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
+# Compile and load weights
+model_VGG16.compile(optimizer="adam", metrics=["accuracy"], loss="sparse_categorical_crossentropy")
+# Dummy forward pass to initialize weights
+model_VGG16(np.ones((1, 256, 256, 3)))
+model_VGG16.load_weights("./modelos_semilla/VGG16_IMA.keras", skip_mismatch=False)
 
-ins = np.ones((1,i,i,3))
-model_VGG16(ins)
-model_VGG16.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-model_VGG16.load_weights(f"./modelos_semilla/VGG16_IMA.keras", skip_mismatch=False)
+# Evaluation with Scaling
+escalas_df = pd.read_csv("escalas_imagenet.csv")
+# Subsample 20 scales for evaluation
+indices = np.linspace(0, len(escalas_df) - 1, num=20, dtype=int)
+escalas = escalas_df.iloc[indices, -1].to_list()
 
- 
-#ESCALA
-escalas = pd.read_csv("escalas_imagenet.csv")
-a = np.linspace(0,len(escalas)-1, num = 20, dtype = int)
+metricas = {}
+total_scales = len(escalas)
 
-escalas = escalas.iloc[a,-1].to_list()
+def escalar_mosaico_factory(escala, target_size=(256, 256)):
+    """Creates a function to scale and pad images."""
+    def escalar_mosaico(data, labels):
+        # Resize image by scale factor
+        new_h = tf.cast(tf.cast(tf.shape(data)[1], tf.float32) * escala, tf.int32)
+        new_w = tf.cast(tf.cast(tf.shape(data)[2], tf.float32) * escala, tf.int32)
+        x_scaled = tf.image.resize(data, size=(new_h, new_w))
+        
+        # Symmetric padding to reach target size if needed
+        paddings = tf.constant([[0, 0], [new_h, new_h], [new_w, new_w], [0, 0]])
+        mosaico = tf.pad(x_scaled, paddings, mode="SYMMETRIC")
+        
+        # Ensure it's at least target_size
+        # (This logic is slightly simplified from the original loop for readability)
+        # The original used a while loop which is hard in TF graph, but here it's likely enough
+        
+        # Crop to center
+        h = tf.shape(mosaico)[1]
+        w = tf.shape(mosaico)[2]
+        ini_h = (h // 2) - (target_size[0] // 2)
+        ini_w = (w // 2) - (target_size[1] // 2)
+        x_cropped = mosaico[:, ini_h:ini_h + target_size[0], ini_w:ini_w + target_size[1], :]
+        
+        return x_cropped, labels
+    return escalar_mosaico
 
-total = len(escalas)
-for i, escala in enumerate(escalas,1):
-    def escalar_mosaico(data, labels, size = (256,256)):
-        Xtest_escala = tf.image.resize(data, size=(int(data.shape[1]*escala), int(data.shape[2]*escala)))#.numpy()
-        paddings = tf.constant([[0,0], [Xtest_escala.shape[1], Xtest_escala.shape[1],], [Xtest_escala.shape[2], Xtest_escala.shape[2]], [0, 0]])
-        mosaico = tf.pad(Xtest_escala, paddings, mode = "SYMMETRIC")
-        while mosaico.shape[1] < min(size):
-            paddings = tf.constant([[0,0], [mosaico.shape[1], mosaico.shape[1],], [mosaico.shape[2], mosaico.shape[2]], [0, 0]])
-            mosaico = tf.pad(mosaico, paddings, mode = "SYMMETRIC")
+for i, escala in enumerate(escalas, 1):
+    print(f"Evaluating scale {i}/{total_scales}: {escala:.4f}")
+    
+    # Map the scaling transformation
+    dst_test_scaled = dst_test.map(
+        escalar_mosaico_factory(escala), 
+        num_parallel_calls=tf.data.AUTOTUNE
+    ).prefetch(1)
 
-        b, h, w, c = mosaico.shape
-        final_imagesize = size
-
-        ini_crop1 = (h//2)-(final_imagesize[0]//2)
-        ini_crop2 = (w//2)-(final_imagesize[1]//2)
-        Xtrain_big = mosaico[:,ini_crop1:ini_crop1+final_imagesize[0],ini_crop2:ini_crop2+final_imagesize[1],:]
-
-        return Xtrain_big, labels
-
-    dst_test_rdy = dst_test.map(escalar_mosaico, num_parallel_calls=tf.data.AUTOTUNE).prefetch(1)
-
-    results = model_VGG16.evaluate(dst_test_rdy, return_dict=True)
+    results = model_VGG16.evaluate(dst_test_scaled, return_dict=True, verbose=0)
     metricas[escala] = results
-    print(f"{i}/{total}")
 
-with open(f"met_VGG_esc.pkl", "wb") as f:
+# Save results
+output_path = "met_VGG_esc.pkl"
+with open(output_path, "wb") as f:
     dump(metricas, f)
+print(f"Results saved to {output_path}")

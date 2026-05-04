@@ -1,142 +1,150 @@
-from tqdm.auto import tqdm
+"""
+Test VGGGAP model performance on ImageNet dataset under different rotations.
 
-from pathlib import Path
+This script evaluates the VGGGAP model (VGG16 with intermediate Global Average Pooling layers)
+against images rotated by various angles.
+"""
+
+import os
+from pickle import dump
+
+import cv2
 import numpy as np
 import pandas as pd
-import scipy
-from pickle import dump, load
-import matplotlib.pyplot as plt
-import cv2
-from IPython.display import clear_output
 import tensorflow as tf
-# import plotly.express as px
 from tensorflow.keras import layers
-from functools import partial
-from PIL import Image
-import re
 
-from utils import *
+from utils import crear_mosaico
 
-import torch
-import piq
+# Configuration
+CROP_SIZE = 256
+BATCH_SIZE_TRAIN = 256 // 8
+BATCH_SIZE_TEST = 256 // 4
+MODEL_PATH = "./modelos_semilla/VGGGAP_IMA.keras"
 
-## Datos
-crop = 256
-desps = 50
+def preprocess(path, label):
+    """
+    Basic image preprocessing for ImageNet.
+    
+    Args:
+        path: Path to the image file.
+        label: Label of the image.
+        
+    Returns:
+        Preprocessed image and its label.
+    """
+    img = tf.io.read_file(path)
+    img = tf.image.decode_jpeg(img, channels=3)
+    img = tf.image.convert_image_dtype(img, dtype=tf.float32)
+    img = tf.image.resize(img, size=(CROP_SIZE, CROP_SIZE))
+    return img, label
 
-def preprocess(path,
-               label,
-               ):
-        img = tf.io.read_file(path)
-        img = tf.image.decode_jpeg(img, channels=3)
-        img = tf.image.convert_image_dtype(img, dtype=tf.float32)
-        img = tf.image.resize(img, size=(256,256))
-
-        return img, label
-
+# Load Datasets
 df_train = pd.read_csv("imagenet_train.csv")
-imgs_train = df_train.path
-labels_train = df_train.label_subset
-
-dst_train = tf.data.Dataset.from_tensor_slices((imgs_train, labels_train))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
+dst_train = tf.data.Dataset.from_tensor_slices((df_train.path, df_train.label_subset)) \
+    .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE) \
+    .batch(BATCH_SIZE_TRAIN, drop_remainder=True)
 
 df_test = pd.read_csv("imagenet_test.csv")
-imgs_test = df_test.path
-labels_test = df_test.label_subset
-
-dst_test = tf.data.Dataset.from_tensor_slices((imgs_test, labels_test))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE)#.batch(256//4, drop_remainder=True)
+dst_test = tf.data.Dataset.from_tensor_slices((df_test.path, df_test.label_subset)) \
+    .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE)
 
 df_val = pd.read_csv("imagenet_val.csv")
-imgs_val = df_val.path
-labels_val = df_val.label_subset
+dst_val = tf.data.Dataset.from_tensor_slices((df_val.path, df_val.label_subset)) \
+    .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE) \
+    .batch(BATCH_SIZE_TEST, drop_remainder=True)
 
-dst_val = tf.data.Dataset.from_tensor_slices((imgs_val, labels_val))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True)
-
-# for crop, desps in zip([56, 128, 256], [10, 25, 50]):
-crop = 256
-i = 256
-
-metricas = {}
-
-VGG16 = tf.keras.applications.vgg16.VGG16(
-include_top=False,
-weights='imagenet',
-input_shape=(i,i,3),
+# Build Model
+vgg16_base = tf.keras.applications.vgg16.VGG16(
+    include_top=False,
+    weights='imagenet',
+    input_shape=(CROP_SIZE, CROP_SIZE, 3),
 )
 
-for capa in VGG16.layers:
-    capa.trainable = False
+for layer in vgg16_base.layers:
+    layer.trainable = False
 
-inputs = tf.keras.Input((i,i,1))
-inputs = VGG16.input
+# Intermediate Global Average Pooling layers
+gap1 = layers.GlobalAveragePooling2D()(vgg16_base.layers[3].output)
+gap2 = layers.GlobalAveragePooling2D()(vgg16_base.layers[6].output)
+gap3 = layers.GlobalAveragePooling2D()(vgg16_base.layers[10].output)
+gap4 = layers.GlobalAveragePooling2D()(vgg16_base.layers[14].output)
+gap5 = layers.GlobalAveragePooling2D()(vgg16_base.layers[18].output)
 
-GAPMP1 = layers.GlobalAveragePooling2D()(VGG16.layers[3].output)
-GAPMP2 = layers.GlobalAveragePooling2D()(VGG16.layers[6].output)
-GAPMP3 = layers.GlobalAveragePooling2D()(VGG16.layers[10].output)
-GAPMP4 = layers.GlobalAveragePooling2D()(VGG16.layers[14].output)
-GAPMP5 = layers.GlobalAveragePooling2D()(VGG16.layers[18].output)
+gap_concat = layers.Concatenate(axis=-1)([gap1, gap2, gap3, gap4, gap5])
+outputs = layers.Dense(160, activation="softmax")(gap_concat)
 
-GAPFinal = layers.Concatenate(axis=-1)([GAPMP1,GAPMP2,GAPMP3,GAPMP4,GAPMP5])
-outputs = layers.Dense(160, activation = "softmax")(GAPFinal)
+base_model = tf.keras.Model(vgg16_base.input, outputs)
 
-ModeloVGGGAP = tf.keras.Model(inputs,outputs)
+# Preprocessing layer for VGG16
+preprocess_input = tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(
+    tf.convert_to_tensor(x) * 255.0, data_format=None))
 
-prepro = tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess_input(
-        tf.convert_to_tensor(x)*255., data_format=None))
+model_vgg_gap = tf.keras.Sequential([preprocess_input, base_model])
 
-ModeloVGGGAP = tf.keras.Sequential([prepro, ModeloVGGGAP])
+# Initialize and load weights
+sample_input = np.ones((1, CROP_SIZE, CROP_SIZE, 3))
+model_vgg_gap(sample_input)
+model_vgg_gap.compile(metrics=["accuracy"], loss="sparse_categorical_crossentropy")
 
-ins = np.ones((1,i,i,3))
-ModeloVGGGAP(ins)
-ModeloVGGGAP.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-ModeloVGGGAP.load_weights(f"./modelos_semilla/VGGGAP_IMA.keras", skip_mismatch=False)
+if os.path.exists(MODEL_PATH):
+    model_vgg_gap.load_weights(MODEL_PATH, skip_mismatch=False)
+else:
+    print(f"Warning: Model weights not found at {MODEL_PATH}")
 
-#ROTACION
+# Rotation logic
 @tf.numpy_function(Tout=tf.float32)
-def rotar2(X, crop, rotacion):
-  h, w, c = X.shape
-  final_imagesize = crop
-  ini_crop = ((h//2)-(final_imagesize[0]//2),(w//2)-(final_imagesize[1]//2))
-
-  height, width = h, w
-  image_center = (width//2, height//2)
-  rot_mat = cv2.getRotationMatrix2D(image_center, rotacion, 1.0)
-  result = cv2.warpAffine(X, rot_mat, dsize=(width, height), flags=cv2.INTER_LINEAR)
-  result = result[ini_crop[0]:ini_crop[0]+final_imagesize[0],ini_crop[1]:ini_crop[1]+final_imagesize[1],:]
-  return result
-
-rotaciones = np.arange(0,21, 1)
-total = len(rotaciones)
-
-for i, rot in enumerate(rotaciones):
-
-    def f_rotar(imgs, labels):
-        imgs = crear_mosaico(imgs[None,:,:,:])[0]
-        imgs = rotar2(imgs, (256, 256), rot)
-        return  tf.ensure_shape(imgs, [256,256,3]), labels
+def rotate_image(img, crop_size, angle):
+    """
+    Rotate image using OpenCV and crop to desired size.
     
-    dst_test_rdy = dst_test.map(f_rotar, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True, num_parallel_calls=tf.data.AUTOTUNE).prefetch(1)
-
-    results = ModeloVGGGAP.evaluate(dst_test_rdy, return_dict=True, verbose=1)
-    metricas[rot] = results
-    print(f"{i}/{total}")
-
-
-with open(f"met_VGGGAP_rot.pkl", "wb") as f:
-    dump(metricas, f)
-
-
-
-
-
-
-
+    Args:
+        img: Input image.
+        crop_size: Size of the final crop.
+        angle: Rotation angle in degrees.
+        
+    Returns:
+        Rotated and cropped image.
+    """
+    h, w, _ = img.shape
+    center = (w // 2, h // 2)
+    rot_mat = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated = cv2.warpAffine(img, rot_mat, dsize=(w, h), flags=cv2.INTER_LINEAR)
     
+    ini_h = (h // 2) - (crop_size // 2)
+    ini_w = (w // 2) - (crop_size // 2)
+    cropped = rotated[ini_h:ini_h + crop_size, ini_w:ini_w + crop_size, :]
+    return cropped
 
+# Evaluation under rotation
+rotations = np.arange(0, 21, 1)
+metrics_results = {}
+total_rotations = len(rotations)
 
- 
-
+for i, rot in enumerate(rotations):
+    def apply_rotation(img, label):
+        """
+        Create mosaic, rotate and ensure shape.
+        
+        Args:
+            img: Input image.
+            label: Image label.
+            
+        Returns:
+            Rotated image and label.
+        """
+        img_mosaic = crear_mosaico(img[None, :, :, :])[0]
+        img_rot = rotate_image(img_mosaic, CROP_SIZE, float(rot))
+        return tf.ensure_shape(img_rot, [CROP_SIZE, CROP_SIZE, 3]), label
     
+    dst_test_rotated = dst_test.map(apply_rotation, num_parallel_calls=tf.data.AUTOTUNE) \
+        .batch(BATCH_SIZE_TEST, drop_remainder=True) \
+        .prefetch(1)
+
+    results = model_vgg_gap.evaluate(dst_test_rotated, return_dict=True, verbose=0)
+    metrics_results[rot] = results
+    print(f"Rotation {i}/{total_rotations}: {rot} degrees - Accuracy: {results['accuracy']:.4f}")
+
+# Save results
+with open("met_VGGGAP_rot.pkl", "wb") as f:
+    dump(metrics_results, f)
