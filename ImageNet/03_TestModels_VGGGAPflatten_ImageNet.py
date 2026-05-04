@@ -19,32 +19,10 @@ from utils import *
 
 import torch
 import piq
-from sklearn.model_selection import train_test_split
-
-## WandB
-import wandb
-from wandb.integration.keras import WandbMetricsLogger, WandbModelCheckpoint
-
-config = {
-     "model": "VGGGAP_regu",
-     "batch_size": 256//8,
-     "learning_rate": 1e-3,
-     "epochs": 1500,
-}
-wandb.init(project="ClassificationModelsInv",
-           mode="online",
-           job_type="training",
-           config=config)
-config = wandb.config
-
-## Semilla aleatoria
-
-tf.keras.utils.set_random_seed(666)
 
 ## Datos
-
-i = 256
-
+crop = 256
+desps = 50
 
 def preprocess(path,
                label,
@@ -68,15 +46,20 @@ imgs_test = df_test.path
 labels_test = df_test.label_subset
 
 dst_test = tf.data.Dataset.from_tensor_slices((imgs_test, labels_test))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
+        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True)
 
 df_val = pd.read_csv("imagenet_val.csv")
 imgs_val = df_val.path
 labels_val = df_val.label_subset
 
 dst_val = tf.data.Dataset.from_tensor_slices((imgs_val, labels_val))\
-        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//8, drop_remainder=True)
+        .map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(256//4, drop_remainder=True)
 
+# for crop, desps in zip([56, 128, 256], [10, 25, 50]):
+crop = 256
+i = 256
+
+metricas = {}
 
 VGG16 = tf.keras.applications.vgg16.VGG16(
 include_top=False,
@@ -90,7 +73,7 @@ for capa in VGG16.layers:
 inputs = tf.keras.Input((i,i,1))
 inputs = VGG16.input
 
-# salida_flatten = layers.Flatten()(VGG16.output)
+salida_flatten = layers.Flatten()(VGG16.output)
 
 GAPMP1 = layers.GlobalAveragePooling2D()(VGG16.layers[3].output)
 GAPMP2 = layers.GlobalAveragePooling2D()(VGG16.layers[6].output)
@@ -98,9 +81,8 @@ GAPMP3 = layers.GlobalAveragePooling2D()(VGG16.layers[10].output)
 GAPMP4 = layers.GlobalAveragePooling2D()(VGG16.layers[14].output)
 GAPMP5 = layers.GlobalAveragePooling2D()(VGG16.layers[18].output)
 
-GAPFinal = layers.Concatenate(axis=-1)([GAPMP1,GAPMP2,GAPMP3,GAPMP4,GAPMP5])
-outputs = layers.Dense(160, activation = "softmax",
-                       kernel_regularizer=tf.keras.regularizers.L2(l2=1e-4))(GAPFinal)
+GAPFinal = layers.Concatenate(axis=-1)([GAPMP1,GAPMP2,GAPMP3,GAPMP4,GAPMP5, salida_flatten])
+outputs = layers.Dense(160, activation = "softmax")(GAPFinal)
 
 ModeloVGGGAP = tf.keras.Model(inputs,outputs)
 
@@ -109,8 +91,24 @@ prepro = tf.keras.layers.Lambda(lambda x: tf.keras.applications.vgg16.preprocess
 
 ModeloVGGGAP = tf.keras.Sequential([prepro, ModeloVGGGAP])
 
-ModeloVGGGAP.compile(optimizer = "adam", metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
-history = ModeloVGGGAP.fit(dst_train, epochs = 1500, validation_data = dst_val,
-                            callbacks = [tf.keras.callbacks.EarlyStopping(patience=25,monitor="val_accuracy"),
-                                        tf.keras.callbacks.ModelCheckpoint(filepath=f'VGGGAP_IMA_regu.keras', save_best_only=True,monitor="val_accuracy"),
-                                        WandbMetricsLogger()])
+ins = np.ones((1,i,i,3))
+ModeloVGGGAP(ins)
+ModeloVGGGAP.compile(metrics=["accuracy"], loss = "sparse_categorical_crossentropy")
+ModeloVGGGAP.load_weights(f"VGG16GAPflatten_IMA.keras", skip_mismatch=False)
+#TRASLACION
+desps_h = range(-desps,desps+1)
+desps_v = range(-desps,desps+1)
+
+for desp_h in desps_h:
+    for desp_v in desps_v:
+        def postprocess(img, label):
+            img = crear_mosaico(img)
+            img = trasladar2(img, crop=(crop, crop), desp_h=desp_h, desp_v=desp_v)
+            return img, label
+        dst_test_t = dst_test.map(postprocess)
+
+        results = ModeloVGGGAP.evaluate(dst_test_t, return_dict=True)
+        metricas[(desp_h, desp_v)] = results
+
+with open(f"met_VGGGAPflatten_IMA.pkl", "wb") as f:
+    dump(metricas, f)
