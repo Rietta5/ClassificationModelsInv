@@ -1,4 +1,4 @@
-# Translation Invariant CNNs
+# 🖼️ Translation Invariant CNNs
 
 Official implementation of the paper:
 **"Parameter-Efficient Architectural Modifications for Translation-Invariant CNNs"**  
@@ -7,7 +7,7 @@ Nuria Alabau-Bosque, Jorge Vila-Tomás, Paula Daudén-Oliver, Valero Laparra, an
 
 ---
 
-## Abstract
+## 📝 About the Paper
 
 Standard Convolutional Neural Networks (CNNs) exhibit a startling fragility: even a single-pixel shift can drastically degrade performance due to their reliance on spatially dependent fully connected layers. In this work, we resolve this vulnerability by proposing a lightweight **'Online Architecture'** strategy. By strategically inserting **Global Average Pooling (GAP)** layers, we effectively decouple feature recognition from spatial location. 
 
@@ -17,7 +17,7 @@ Using VGG-16 as a case study, we demonstrate:
 - **2x improvement** in translational robustness while maintaining competitive accuracy on ImageNet.
 - **Superior generalization** when integrated into perceptual metrics like LPIPS.
 
-## Key Features
+## ✨ Key Features
 
 This repository provides the scripts for training and evaluating standard vs. modified (GAP-based) architectures to assess their invariance to geometric transformations.
 
@@ -27,7 +27,7 @@ This repository provides the scripts for training and evaluating standard vs. mo
 - **Perceptual Metrics**: Training and evaluation of the LPIPS metric using invariant backbones.
 - **Utilities**: Robust image manipulation tools (rotation, translation, scaling) and dataset loaders in `utils.py`.
 
-## Repository Structure
+## 📂 Repository Structure
 
 - `00_Entrenamiento_*.py`: Training scripts for MNIST.
 - `01_Entrenamiento_*.py`: Training scripts for ImageNet.
@@ -36,29 +36,29 @@ This repository provides the scripts for training and evaluating standard vs. mo
 - `05_Entrenamiento_LPIPSVGGGAP_TID08.py`: Training a modified LPIPS metric on the TID2008 dataset.
 - `utils.py`: Common helper functions for data loading and image processing.
 
-## Installation
+## ⚙️ Installation
 
-Ensure you have Python 3.8+ and install the dependencies:
+Ensure you have Python 3.8+ and install the dependencies using the provided `requirements.txt`:
 
 ```bash
-pip install tensorflow numpy opencv-python pillow tqdm pandas scipy torch piq scikit-learn wandb
+pip install -r requirements.txt
 ```
 
-## Usage Examples
+## 🚀 Usage Examples
 
-### Training a Model
+### 🏋️ Training a Model
 ```bash
 python 00_Entrenamiento_ResNet_MNIST.py
 ```
 
-### Testing Invariance
+### 🧪 Testing Invariance
 To evaluate a model's performance under various scaling factors, rotations, or translations:
 ```bash
 python 02_TestModelos_ResNet_MNIST.py
 ```
 This script loads the weights, applies transformations, and saves results as `.pkl` files.
 
-### Image Manipulation
+### 🛠️ Image Manipulation
 ```python
 from utils import rotar, escalar, trasladar_MNIST
 
@@ -69,14 +69,14 @@ rotated_img = rotar(image_data, rotacion=45)
 scaled_dataset = escalar(dataset, escala=1.2, size=128)
 ```
 
-## Datasets
+## 📊 Datasets
 
 The project supports:
 - **MNIST / CIFAR-10**: Loaded via Keras.
 - **ImageNet**: Expected in a local `./Imagenet` folder.
 - **TID2008 / TID2013**: Used for perceptual metric experiments.
 
-## Citation
+## 🎓 Citation
 
 If you find this work useful, please cite our paper:
 
@@ -92,6 +92,6 @@ If you find this work useful, please cite our paper:
 }
 ```
 
-## License
+## 📜 License
 
 This project is licensed under the terms provided in the `LICENSE` file.
