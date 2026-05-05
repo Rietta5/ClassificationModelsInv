@@ -13,7 +13,6 @@ Standard Convolutional Neural Networks (CNNs) exhibit a startling fragility: eve
 
 Using VGG-16 as a case study, we demonstrate:
 - **98% reduction** in trainable parameters (from 5.2M to 82K).
-- **90% reduction** in total network size.
 - **2x improvement** in translational robustness while maintaining competitive accuracy on ImageNet.
 - **Superior generalization** when integrated into perceptual metrics like LPIPS.
 
